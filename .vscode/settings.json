@@ -1,0 +1,9 @@
+{
+    "go.testFlags": [
+        "-v",
+        "-args",
+        "-test.v",
+    ],
+    "go.testTimeout": "3000s",
+    "makefile.configureOnOpen": false
+}
