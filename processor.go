@@ -2,6 +2,7 @@ package async
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math/rand/v2"
 	"sync"
@@ -181,16 +182,25 @@ func (p *processor) requeue(msg *base.TaskMessage) {
 	}
 }
 
+// SkipRetry is used as a return value from Handler.ProcessTask to indicate that
+// the task should not be retried and should be archived instead.
+var SkipRetry = errors.New("skip retry for the task")
+
 func (p *processor) handleFailedMessage(ctx context.Context, msg *base.TaskMessage, err error) {
 	task := NewTask(msg.Type, msg.Payload, msg.Headers)
 	if p.errHandler != nil {
 		p.errHandler.HandleError(ctx, task, err)
 	}
 
-	delay := p.retryDelayFunc(msg.Retried, err, task)
-	retryAt := time.Now().Add(delay)
-
-	p.broker.Retry(ctx, msg, retryAt, err.Error(), true)
+	switch {
+	case msg.Retried >= msg.Retry || errors.Is(err, SkipRetry):
+		slog.Warn("Retry exhausted.", "task id", msg.ID)
+		p.broker.Archive(ctx, msg, err.Error())
+	default:
+		delay := p.retryDelayFunc(msg.Retried, err, task)
+		retryAt := time.Now().Add(delay)
+		p.broker.Retry(ctx, msg, retryAt, err.Error(), true)
+	}
 }
 
 func (p *processor) handleSuccessMessage(ctx context.Context, msg *base.TaskMessage) {

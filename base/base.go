@@ -90,6 +90,7 @@ type Broker interface {
 	Done(ctx context.Context, msg *TaskMessage) error
 	Requeue(ctx context.Context, msg *TaskMessage) error
 	Retry(ctx context.Context, msg *TaskMessage, processAt time.Time, errMsg string, isFailure bool) error
+	Archive(ctx context.Context, msg *TaskMessage, errMsg string) error
 
 	WriteResult(qname, id string, data []byte) (n int, err error)
 }

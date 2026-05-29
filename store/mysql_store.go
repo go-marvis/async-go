@@ -63,7 +63,7 @@ func (m *MySQLStore) Dequeue(queues ...string) (*base.TaskMessage, error) {
 	}
 
 	query, args, err := sqlx.In(`SELECT id, type, payload, headers, queue, retry, retried, priority, timeout, available_at FROM tasks
-	WHERE queue IN (?) AND status='pending' AND available_at <= NOW() AND retried <= retry
+	WHERE queue IN (?) AND status='pending' AND available_at <= NOW()
 	ORDER BY priority desc, id
 	LIMIT 1 FOR UPDATE`, queues)
 	if err != nil {
@@ -109,12 +109,17 @@ func (m *MySQLStore) Done(ctx context.Context, msg *base.TaskMessage) error {
 }
 
 func (m *MySQLStore) Requeue(ctx context.Context, msg *base.TaskMessage) error {
-	_, err := m.db.Exec(`UPDATE tasks SET status='pending', accepted_at=NULL WHERE id=? AND status!='pending'`, msg.ID)
+	_, err := m.db.Exec(`UPDATE tasks SET status='pending', accepted_at=NULL WHERE id=?`, msg.ID)
 	return err
 }
 
 func (m *MySQLStore) Retry(ctx context.Context, msg *base.TaskMessage, processAt time.Time, errMsg string, isFailure bool) error {
 	_, err := m.db.Exec(`UPDATE tasks SET available_at=?, retried=retried+1, status='pending', accepted_at=NULL, completed_at=NULL, result=? WHERE id=? AND status!='pending'`, processAt, errMsg, msg.ID)
+	return err
+}
+
+func (m *MySQLStore) Archive(ctx context.Context, msg *base.TaskMessage, errMsg string) error {
+	_, err := m.db.Exec("UPDATE tasks SET status='archived', result=?, completed_at=NOW() WHERE id=?", errMsg, msg.ID)
 	return err
 }
 
