@@ -6,10 +6,11 @@ import (
 	"time"
 )
 
-type TaskMessage struct {
-	// Id is a unique identifier for each task.
-	Id int64
+// DefaultQueueName is the queue name used if none are specified by user.
+const DefaultQueueName = "default"
 
+// TaskMessage is the internal representation of a task with additional metadata fields.
+type TaskMessage struct {
 	// Type indicates the kind of the task to be performed.
 	Type string
 
@@ -18,6 +19,9 @@ type TaskMessage struct {
 
 	// Headers holds additional metadata for the task.
 	Headers map[string]string
+
+	// ID is a unique identifier for each task.
+	ID string
 
 	// Queue is a name this message should be enqueued to.
 	Queue string
@@ -32,22 +36,14 @@ type TaskMessage struct {
 	Priority int
 
 	// Timeout specifies timeout in seconds.
+	// If task processing doesn't complete within the timeout, the task will be retried
+	//
 	// Use zero to indicate no timeout.
 	Timeout int64
 
 	AvailableAt time.Time
-}
-
-// Broker is a message broker that supports operations to manage task queues.
-type Broker interface {
-	Ping() error
-	Close() error
-
-	Enqueue(ctx context.Context, msg *TaskMessage) error
-	Dequeue(queue string) (*TaskMessage, error)
-	Done(ctx context.Context, taskId int64, result string) error
-	Requeue(ctx context.Context, taskId int64) error
-	Retry(ctx context.Context, taskId int64, delay time.Duration, err error) error
+	AcceptedAt  time.Time
+	CompletedAt time.Time
 }
 
 // Cancelations is a collection that holds cancel functions for all active tasks.
@@ -85,4 +81,15 @@ func (c *Cancelations) Get(id string) (fn context.CancelFunc, ok bool) {
 	defer c.mu.Unlock()
 	fn, ok = c.cancelFuncs[id]
 	return fn, ok
+}
+
+// Broker is a message broker that supports operations to manage task queues.
+type Broker interface {
+	Enqueue(ctx context.Context, msg *TaskMessage) error
+	Dequeue(qnames ...string) (*TaskMessage, error)
+	Done(ctx context.Context, msg *TaskMessage) error
+	Requeue(ctx context.Context, msg *TaskMessage) error
+	Retry(ctx context.Context, msg *TaskMessage, processAt time.Time, errMsg string, isFailure bool) error
+
+	WriteResult(qname, id string, data []byte) (n int, err error)
 }

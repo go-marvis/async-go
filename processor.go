@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"math/rand/v2"
-	"strconv"
 	"sync"
 	"time"
 
@@ -16,13 +15,14 @@ type processor struct {
 	broker base.Broker
 
 	handler   Handler
-	contextFn func() context.Context
+	baseCtxFn func() context.Context
 
-	queue string
+	queues []string
 
 	taskCheckInterval time.Duration
-	retryDelayFn      func(int, *Task) time.Duration
+	retryDelayFunc    RetryDelayFunc
 
+	errHandler      ErrorHandler
 	shutdownTimeout time.Duration
 
 	// sema is a counting semaphore to ensure the number of active workers
@@ -44,10 +44,6 @@ type processor struct {
 	cancelations *base.Cancelations
 
 	finished chan<- *base.TaskMessage
-}
-
-func newProcessor() *processor {
-	return &processor{}
 }
 
 // Note: stops only the "processor" goroutine, does not stop workers.
@@ -100,8 +96,7 @@ func (p *processor) exec() {
 	case <-p.quit:
 		return
 	case p.sema <- struct{}{}: // acquire token
-		msg, err := p.broker.Dequeue(p.queue)
-
+		msg, err := p.broker.Dequeue(p.queues...)
 		if err != nil {
 			slog.Debug("All queues are empty")
 			// Queues are empty, this is a normal behavior.
@@ -120,40 +115,53 @@ func (p *processor) exec() {
 				<-p.sema //
 			}()
 
-			taskId := strconv.FormatInt(msg.Id, 10)
-			ctx, cancel := asynccontext.New(p.contextFn(), msg, deadline)
-			p.cancelations.Add(taskId, cancel)
+			ctx, cancel := asynccontext.New(p.baseCtxFn(), msg, deadline)
+			p.cancelations.Add(msg.ID, cancel)
 			defer func() {
 				cancel()
-				p.cancelations.Delete(taskId)
+				p.cancelations.Delete(msg.ID)
 			}()
+
+			// check context before starting a worker goroutine.
+			select {
+			case <-ctx.Done():
+				// already canceled (e.g. deadline exceeded).
+				p.handleFailedMessage(ctx, msg, ctx.Err())
+				return
+			default:
+			}
 
 			resCh := make(chan error, 1)
 			go func() {
-				task := &Task{
-					Type:    msg.Type,
-					Payload: msg.Payload,
-					Headers: msg.Headers,
-				}
-
+				task := newTask(
+					msg.Type,
+					msg.Payload,
+					&ResultWriter{
+						id:     msg.ID,
+						qname:  msg.Queue,
+						broker: p.broker,
+						ctx:    ctx,
+					},
+				)
+				task.headers = msg.Headers
 				resCh <- p.perform(ctx, task)
 			}()
 
 			select {
 			case <-p.abort:
 				// time is up, push the message back to queue and quit this worker goroutine.
-				slog.Warn("Quitting worker.", "task id", msg.Id)
+				slog.Warn("Quitting worker.", "task id", msg.ID)
 				p.requeue(msg)
 				return
 			case <-ctx.Done():
-				p.handleFailedMessage(msg, ctx.Err())
+				p.handleFailedMessage(ctx, msg, ctx.Err())
 				return
 			case resErr := <-resCh:
 				if resErr != nil {
-					p.handleFailedMessage(msg, resErr)
+					p.handleFailedMessage(ctx, msg, resErr)
 					return
 				}
-				p.handleSuccessMessage(msg)
+				p.handleSuccessMessage(ctx, msg)
 			}
 		}()
 	}
@@ -165,30 +173,28 @@ func (p *processor) perform(ctx context.Context, task *Task) error {
 
 func (p *processor) requeue(msg *base.TaskMessage) {
 	ctx := context.Background()
-	err := p.broker.Requeue(ctx, msg.Id)
+	err := p.broker.Requeue(ctx, msg)
 	if err != nil {
-		slog.Error("Could not push task back to queue.", "id", msg.Id, "err", err)
+		slog.Error("Could not push task back to queue.", "id", msg.ID, "err", err)
 	} else {
-		slog.Info("Pushed task back to queue.", "id", msg.Id)
+		slog.Info("Pushed task back to queue.", "id", msg.ID)
 	}
 }
 
-func (p *processor) handleFailedMessage(msg *base.TaskMessage, err error) {
-	ctx := context.Background()
+func (p *processor) handleFailedMessage(ctx context.Context, msg *base.TaskMessage, err error) {
+	task := NewTask(msg.Type, msg.Payload, msg.Headers)
+	if p.errHandler != nil {
+		p.errHandler.HandleError(ctx, task, err)
+	}
 
-	delay := p.retryDelayFn(msg.Retried, &Task{
-		Type:    msg.Type,
-		Payload: msg.Payload,
-		Headers: msg.Headers,
-		Queue:   msg.Queue,
-	})
+	delay := p.retryDelayFunc(msg.Retried, err, task)
+	retryAt := time.Now().Add(delay)
 
-	p.broker.Retry(ctx, msg.Id, delay, err)
+	p.broker.Retry(ctx, msg, retryAt, err.Error(), true)
 }
 
-func (p *processor) handleSuccessMessage(msg *base.TaskMessage) {
-	ctx := context.Background()
-	p.broker.Done(ctx, msg.Id, "")
+func (p *processor) handleSuccessMessage(ctx context.Context, msg *base.TaskMessage) {
+	p.broker.Done(ctx, msg)
 }
 
 // computeDeadline returns the given task's deadline,

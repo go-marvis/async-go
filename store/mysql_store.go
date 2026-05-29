@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,24 +9,17 @@ import (
 
 	"github.com/go-marvis/async-go/base"
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/jmoiron/sqlx"
 )
 
 type MySQLStore struct {
-	db *sql.DB
+	db *sqlx.DB
 }
 
-func NewDatabaseStore(db *sql.DB) *MySQLStore {
+func NewMySQLStore(db *sqlx.DB) *MySQLStore {
 	return &MySQLStore{
 		db,
 	}
-}
-
-func (m *MySQLStore) Ping() error {
-	return m.db.Ping()
-}
-
-func (m *MySQLStore) Close() error {
-	return m.db.Close()
 }
 
 func (m *MySQLStore) Enqueue(ctx context.Context, msg *base.TaskMessage) error {
@@ -39,11 +31,16 @@ func (m *MySQLStore) Enqueue(ctx context.Context, msg *base.TaskMessage) error {
 		return fmt.Errorf("Queue required")
 	}
 
+	availableAt := msg.AvailableAt
+	if availableAt.IsZero() {
+		availableAt = time.Now()
+	}
+
 	headers, _ := json.Marshal(msg.Headers)
 
-	_, err := m.db.ExecContext(ctx,
-		`INSERT INTO tasks(type, payload, headers, queue, retry, priority, timeout, status, available_at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+	_, err := m.db.Exec(
+		`INSERT INTO tasks(type, payload, headers, queue, retry, priority, timeout, available_at, status)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
 		msg.Type,
 		string(msg.Payload),
 		string(headers),
@@ -51,17 +48,25 @@ func (m *MySQLStore) Enqueue(ctx context.Context, msg *base.TaskMessage) error {
 		msg.Retry,
 		msg.Priority,
 		msg.Timeout,
-		msg.AvailableAt,
+		availableAt,
 	)
 
 	return err
 }
-func (m *MySQLStore) Dequeue(queue string) (*base.TaskMessage, error) {
+func (m *MySQLStore) Dequeue(queues ...string) (*base.TaskMessage, error) {
 
 	var msg base.TaskMessage
 
-	if queue == "" {
+	if len(queues) == 0 {
 		return &msg, errors.New("Queue required.")
+	}
+
+	query, args, err := sqlx.In(`SELECT id, type, payload, headers, queue, retry, retried, priority, timeout, available_at FROM tasks
+	WHERE queue IN (?) AND status='pending' AND available_at <= NOW() AND retried <= retry
+	ORDER BY priority desc, id
+	LIMIT 1 FOR UPDATE`, queues)
+	if err != nil {
+		return &msg, err
 	}
 
 	tx, err := m.db.Begin()
@@ -76,19 +81,16 @@ func (m *MySQLStore) Dequeue(queue string) (*base.TaskMessage, error) {
 	}()
 
 	var headers string
-	row := tx.QueryRow(`SELECT id, type, payload, headers, queue, retry, retried, priority, timeout, available_at FROM tasks
-	WHERE queue=? AND status='pending' AND available_at <= NOW() AND retried <= retry
-	ORDER BY priority desc, id
-	LIMIT 1 FOR UPDATE`, queue)
+	row := tx.QueryRow(query, args...)
 
-	err = row.Scan(&msg.Id, &msg.Type, &msg.Payload, &headers, &msg.Queue, &msg.Retry, &msg.Retried, &msg.Priority, &msg.Timeout, &msg.AvailableAt)
+	err = row.Scan(&msg.ID, &msg.Type, &msg.Payload, &headers, &msg.Queue, &msg.Retry, &msg.Retried, &msg.Priority, &msg.Timeout, &msg.AvailableAt)
 	if err != nil {
 		return &msg, err
 	}
 
 	_ = json.Unmarshal([]byte(headers), &msg.Headers)
 
-	_, err = tx.Exec("UPDATE tasks SET status='accepted', accepted_at=NOW() WHERE id=?", msg.Id)
+	_, err = tx.Exec("UPDATE tasks SET status='accepted', accepted_at=NOW() WHERE id=?", msg.ID)
 	if err != nil {
 		return &msg, err
 	}
@@ -100,22 +102,22 @@ func (m *MySQLStore) Dequeue(queue string) (*base.TaskMessage, error) {
 	return &msg, err
 }
 
-func (m *MySQLStore) Done(ctx context.Context, taskId int64, result string) error {
-	_, e := m.db.ExecContext(ctx, "UPDATE tasks SET status='completed', completed_at=NOW(), result=? WHERE id=?", result, taskId)
+func (m *MySQLStore) Done(ctx context.Context, msg *base.TaskMessage) error {
+	_, e := m.db.Exec(`UPDATE tasks SET status='completed', completed_at=NOW() WHERE id=?`, msg.ID)
 	return e
 }
 
-func (m *MySQLStore) Requeue(ctx context.Context, taskId int64) error {
-	_, err := m.db.ExecContext(ctx, "UPDATE tasks SET status='pending', accepted_at=NULL WHERE id=? AND status!='pending'", taskId)
+func (m *MySQLStore) Requeue(ctx context.Context, msg *base.TaskMessage) error {
+	_, err := m.db.Exec(`UPDATE tasks SET status='pending', accepted_at=NULL WHERE id=? AND status!='pending'`, msg.ID)
 	return err
 }
 
-func (m *MySQLStore) Retry(ctx context.Context, taskId int64, delay time.Duration, e error) error {
-	var availableAt = time.Now()
-	if delay > 0 {
-		availableAt.Add(delay)
-	}
-
-	_, err := m.db.ExecContext(ctx, "UPDATE tasks SET available_at=?, retried=retried+1, status='pending', accepted_at=NULL, result=? WHERE id=? AND status!='pending'", availableAt, e.Error(), taskId)
+func (m *MySQLStore) Retry(ctx context.Context, msg *base.TaskMessage, processAt time.Time, errMsg string, isFailure bool) error {
+	_, err := m.db.Exec(`UPDATE tasks SET available_at=?, retried=retried+1, status='pending', accepted_at=NULL, completed_at=NULL, result=? WHERE id=? AND status!='pending'`, processAt, errMsg, msg.ID)
 	return err
+}
+
+func (m *MySQLStore) WriteResult(queue, id string, data []byte) (int, error) {
+	_, err := m.db.Exec(`UPDATE tasks SET result=? WHERE id=?`, string(data), id)
+	return len(data), err
 }
