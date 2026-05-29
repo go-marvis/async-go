@@ -11,8 +11,6 @@ import (
 	"time"
 
 	"github.com/go-marvis/async-go/base"
-	"github.com/go-marvis/async-go/store"
-	"github.com/jmoiron/sqlx"
 )
 
 // Server is responsible for task processing and task lifecycle management.
@@ -97,7 +95,7 @@ const (
 )
 
 // NewServer returns a new Server
-func NewServer(db *sqlx.DB, cfg Config) *Server {
+func NewServer(broker base.Broker, cfg Config) *Server {
 	baseCtxFn := cfg.BaseContext
 	if baseCtxFn == nil {
 		baseCtxFn = context.Background
@@ -128,7 +126,6 @@ func NewServer(db *sqlx.DB, cfg Config) *Server {
 		shutdownTimeout = defaultShutdownTimeout
 	}
 
-	broker := store.NewMySQLStore(db)
 	cancels := base.NewCancelations()
 
 	proc := &processor{

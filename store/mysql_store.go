@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,9 +17,9 @@ type MySQLStore struct {
 	db *sqlx.DB
 }
 
-func NewMySQLStore(db *sqlx.DB) *MySQLStore {
+func NewMySQLStore(db *sql.DB) *MySQLStore {
 	return &MySQLStore{
-		db,
+		sqlx.NewDb(db, "mysql"),
 	}
 }
 

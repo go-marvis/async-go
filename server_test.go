@@ -2,15 +2,17 @@ package async
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
 
-	"github.com/jmoiron/sqlx"
+	"github.com/go-marvis/async-go/store"
 )
 
 func Test_Server(t *testing.T) {
-	db, _ := sqlx.Connect("mysql", "datamind:datamind@tcp(127.0.0.1:3306)/datamind?parseTime=true&loc=Local&charset=utf8mb4,utf8")
+	db, _ := sql.Open("mysql", "datamind:datamind@tcp(127.0.0.1:3306)/datamind?parseTime=true&loc=Local&charset=utf8mb4,utf8")
+	broker := store.NewMySQLStore(db)
 	mux := NewServeMux()
 	mux.HandleFunc("test-task", func(ctx context.Context, t *Task) error {
 		fmt.Println(*t)
@@ -18,7 +20,7 @@ func Test_Server(t *testing.T) {
 		return nil
 	})
 
-	srv := NewServer(db, Config{
+	srv := NewServer(broker, Config{
 		Queues:            []string{"test-queue"},
 		TaskCheckInterval: 5 * time.Second,
 	})
