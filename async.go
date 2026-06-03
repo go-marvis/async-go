@@ -3,12 +3,12 @@ package async
 import (
 	"context"
 	"fmt"
-	"maps"
 
 	"github.com/go-marvis/async-go/base"
 )
 
 type Task struct {
+
 	// typename indicates the type of task to be performed.
 	typename string
 
@@ -38,24 +38,9 @@ func NewTask(typename string, payload []byte, headers map[string]string) *Task {
 	return &Task{
 		typename: typename,
 		payload:  payload,
-		headers:  maps.Clone(headers),
+		headers:  headers,
 	}
 }
-
-// newTask creates a task with the given typename, payload and ResultWriter.
-func newTask(typename string, payload []byte, w *ResultWriter) *Task {
-	return &Task{
-		typename: typename,
-		payload:  payload,
-		headers:  make(map[string]string),
-		w:        w,
-	}
-}
-
-// Task Status
-// pending
-// accepted
-// completed
 
 // ResultWriter is a client interface to write result data for a task.
 type ResultWriter struct {

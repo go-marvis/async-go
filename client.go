@@ -52,12 +52,16 @@ func (c *Client) Enqueue(ctx context.Context, task *Task, opts ...OptionFunc) er
 		Timeout:  int64(option.Timeout.Seconds()),
 	}
 
+	if option.Delay > 0 {
+		msg.AvailableAt = time.Now().Add(option.Delay)
+	}
+
 	return c.broker.Enqueue(ctx, msg)
 }
 
 type Option struct {
-	Retry    int
 	Queue    string
+	Retry    int
 	Timeout  time.Duration
 	Delay    time.Duration
 	Priority int

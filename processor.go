@@ -43,8 +43,6 @@ type processor struct {
 
 	// cancelations is a set of cancel functions for all active tasks.
 	cancelations *base.Cancelations
-
-	finished chan<- *base.TaskMessage
 }
 
 // Note: stops only the "processor" goroutine, does not stop workers.
@@ -113,7 +111,7 @@ func (p *processor) exec() {
 		deadline := p.computeDeadline(msg)
 		go func() {
 			defer func() {
-				<-p.sema //
+				<-p.sema // release token
 			}()
 
 			ctx, cancel := asynccontext.New(p.baseCtxFn(), msg, deadline)
@@ -134,17 +132,17 @@ func (p *processor) exec() {
 
 			resCh := make(chan error, 1)
 			go func() {
-				task := newTask(
-					msg.Type,
-					msg.Payload,
-					&ResultWriter{
+				task := &Task{
+					typename: msg.Type,
+					payload:  msg.Payload,
+					headers:  msg.Headers,
+					w: &ResultWriter{
 						id:     msg.ID,
 						qname:  msg.Queue,
 						broker: p.broker,
 						ctx:    ctx,
 					},
-				)
-				task.headers = msg.Headers
+				}
 				resCh <- p.perform(ctx, task)
 			}()
 
