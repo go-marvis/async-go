@@ -186,6 +186,7 @@ var SkipRetry = errors.New("skip retry for the task")
 
 func (p *processor) handleFailedMessage(ctx context.Context, msg *base.TaskMessage, err error) {
 	task := NewTask(msg.Type, msg.Payload, msg.Headers)
+	task.id = msg.ID
 	if p.errHandler != nil {
 		p.errHandler.HandleError(ctx, task, err)
 	}

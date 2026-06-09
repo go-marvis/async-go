@@ -8,6 +8,8 @@ import (
 )
 
 type Task struct {
+	// unique id
+	id string
 
 	// typename indicates the type of task to be performed.
 	typename string
@@ -22,6 +24,7 @@ type Task struct {
 	w *ResultWriter
 }
 
+func (t *Task) ID() string                 { return t.id }
 func (t *Task) Type() string               { return t.typename }
 func (t *Task) Payload() []byte            { return t.payload }
 func (t *Task) Headers() map[string]string { return t.headers }
