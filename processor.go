@@ -133,6 +133,7 @@ func (p *processor) exec() {
 			resCh := make(chan error, 1)
 			go func() {
 				task := &Task{
+					id:       msg.ID,
 					typename: msg.Type,
 					payload:  msg.Payload,
 					headers:  msg.Headers,
