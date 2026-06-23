@@ -2,14 +2,18 @@ package async
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"runtime"
+	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-marvis/async-go/base"
 	asynccontext "github.com/go-marvis/async-go/context"
+	"github.com/go-marvis/async-go/errors"
 )
 
 type processor struct {
@@ -167,7 +171,29 @@ func (p *processor) exec() {
 	}
 }
 
-func (p *processor) perform(ctx context.Context, task *Task) error {
+func (p *processor) perform(ctx context.Context, task *Task) (err error) {
+	defer func() {
+		if x := recover(); x != nil {
+			slog.Error("recovering from panic.", "", string(debug.Stack()))
+			_, file, line, ok := runtime.Caller(1) // skip the first frame (panic itself)
+			if ok && strings.Contains(file, "runtime/") {
+				// The panic came from the runtime, most likely due to incorrect
+				// map/slice usage. The parent frame should have the real trigger.
+				_, file, line, ok = runtime.Caller(2)
+			}
+			var errMsg string
+			// Include the file and line number info in the error, if runtime.Caller returned ok.
+			if ok {
+				errMsg = fmt.Sprintf("panic [%s:%d]: %v", file, line, x)
+			} else {
+				errMsg = fmt.Sprintf("panic: %v", x)
+			}
+			err = &errors.PanicError{
+				ErrMsg: errMsg,
+			}
+		}
+	}()
+
 	return p.handler.ProcessTask(ctx, task)
 }
 
